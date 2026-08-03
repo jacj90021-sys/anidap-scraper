@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: anidap-scraper
+    runtime: python
+    plan: free
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:3000 --timeout 60
+    healthCheckPath: /api/health
+    envVars:
+      - key: PORT
+        value: 3000
