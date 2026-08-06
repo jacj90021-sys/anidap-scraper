@@ -29,17 +29,28 @@ def api_get(path, referer=None):
 
 
 def slug_for_id(numeric_id):
-    """Resolve numeric anilist id → anidap slug by scraping the info page."""
-    url = f"{BASE}/info/{numeric_id}"
-    hdrs = {"Referer": f"{BASE}/home"}
-    body, _ = http_get(url, hdrs)
-    m = re.search(r'/watch\?id=(\d+)&ep=\d+[^"]*".*?/watch\?id=\1&ep=\d+[^"]*">\s*.*?/anime/info/([A-Za-z0-9_-]+)', body)
-    if m:
-        return m.group(2)
-    # fallback: search for /anime/info/<slug> near the numeric id
-    m2 = re.search(rf'/anime/info/([A-Za-z0-9_-]+).{{0,500}}?{numeric_id}', body)
-    if m2:
-        return m2.group(1)
+    """Resolve numeric anilist id → anidap slug via the public anime API.
+
+    anidap.lol/api/anime/<anilist_id> returns { data: { id: "<slug>", anilistId, ... } }.
+    The slug (e.g. "naruto-oe7a3") is what chad.anidap.lol's rest/api expects.
+    The old HTML-scrape approach broke when anidap changed its info page markup.
+    """
+    try:
+        data, _ = http_get(f"{BASE}/api/anime/{numeric_id}",
+                           {"Referer": f"{BASE}/home"})
+        j = json.loads(data)
+        if j.get("success") and j.get("data", {}).get("id"):
+            return j["data"]["id"]
+    except Exception:
+        pass
+    # fallback: legacy scrape (kept in case the API shape changes)
+    try:
+        body, _ = http_get(f"{BASE}/info/{numeric_id}", {"Referer": f"{BASE}/home"})
+        m = re.search(r'/anime/info/([A-Za-z0-9_-]+)', body)
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
     return None
 
 
@@ -88,6 +99,7 @@ def stream():
     slug = request.args.get("slug")
     ep = request.args.get("ep", "1")
     provider = request.args.get("provider")  # beep, mimi, yuki, sora, zoro
+    stream_type = request.args.get("type", "sub")  # sub | dub
     anilist_id = request.args.get("id")       # numeric id fallback
 
     if not slug and anilist_id:
@@ -108,28 +120,34 @@ def stream():
     if not sub_providers:
         return jsonify({"error": "no servers found", "slug": slug, "ep": ep}), 404
 
+    # select the provider pool for the requested audio type
+    if stream_type == "dub":
+        pool = servers_data.get("dubProviders", []) or sub_providers
+    else:
+        pool = sub_providers
+
     # build provider list
     all_providers = []
-    for p in sub_providers:
+    for p in pool:
         all_providers.append({
             "id": p["id"],
             "default": p.get("default", False),
             "tip": p.get("tip", ""),
         })
 
-    # pick provider: user-specified > default > first
+    # pick provider: user-specified > default > first (from the chosen audio pool)
     chosen = None
     if provider:
-        chosen = next((p for p in sub_providers if p["id"] == provider), None)
+        chosen = next((p for p in pool if p["id"] == provider), None)
     if not chosen:
-        chosen = next((p for p in sub_providers if p.get("default")), sub_providers[0])
+        chosen = next((p for p in pool if p.get("default")), pool[0])
 
     pid = chosen["id"]
 
-    # get sources (m3u8) from chad CDN
+    # get sources (m3u8) from chad CDN — honor the requested audio type
     try:
         sources_data, status = http_get(
-            f"{CDN}/rest/api/sources?id={slug}&epNum={ep}&type=sub&providerId={pid}",
+            f"{CDN}/rest/api/sources?id={slug}&epNum={ep}&type={stream_type}&providerId={pid}",
             {"Referer": f"{BASE}/home"}
         )
         sources = json.loads(sources_data)
