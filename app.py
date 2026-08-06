@@ -28,6 +28,15 @@ def api_get(path, referer=None):
     return json.loads(body)
 
 
+def cdn_get(path, referer=None):
+    """Fetch from the chad.anidap.lol rest API (servers/sources live here, NOT
+    anidap.lol — anidap.lol/rest/api/* 404s; chad.anidap.lol/rest/api/* works)."""
+    url = f"{CDN}/{path}"
+    hdrs = {"Referer": referer or f"{BASE}/home", "Accept": "application/json"}
+    body, _ = http_get(url, hdrs)
+    return json.loads(body)
+
+
 def slug_for_id(numeric_id):
     """Resolve numeric anilist id → anidap slug.
 
@@ -38,16 +47,17 @@ def slug_for_id(numeric_id):
     """
     try:
         body, _ = http_get(f"{BASE}/info/{numeric_id}", {"Referer": f"{BASE}/home"})
-        # pattern: "requestedId","<numeric_id>","id","<slug>"
+        # anidap embeds the page data as a DOUBLE-ESCAPED JSON string, so the
+        # markers appear as  \"requestedId\",\"<id>\",\"id\",\"<slug>\"
         m = re.search(
-            r'"requestedId"\s*,\s*"?%s"?\s*,\s*"id"\s*,\s*"([A-Za-z0-9_-]+)"' % re.escape(str(numeric_id)),
+            r'\\?"requestedId\\?",\\?"?%s\\"?\\?,\\?"id\\?",\\?"([A-Za-z0-9_-]+)\\?"' % re.escape(str(numeric_id)),
             body,
         )
         if m:
             return m.group(1)
-        # looser fallback: any "id","<slug>" near anilistId:<id>
+        # looser: \"id\",\"<slug>\",\"anilistId\",<id>
         m2 = re.search(
-            r'"anilistId"\s*:\s*%s[^}]{0,200}?"id"\s*:\s*"([A-Za-z0-9_-]+)"' % re.escape(str(numeric_id)),
+            r'\\?"id\\?",\\?"([A-Za-z0-9_-]+)\\?",\\?"anilistId\\?",%s' % re.escape(str(numeric_id)),
             body,
         )
         if m2:
@@ -118,9 +128,9 @@ def stream():
     if not slug:
         return jsonify({"error": "provide slug or id"}), 400
 
-    # get available servers
+    # get available servers (lives on chad.anidap.lol, not anidap.lol)
     try:
-        servers_data = api_get(
+        servers_data = cdn_get(
             f"rest/api/servers?id={slug}&epNum={ep}",
             f"{BASE}/home"
         )
@@ -195,7 +205,7 @@ def servers():
     if not slug:
         return jsonify({"error": "provide slug"}), 400
     try:
-        data = api_get(f"rest/api/servers?id={slug}&epNum={ep}", f"{BASE}/home")
+        data = cdn_get(f"rest/api/servers?id={slug}&epNum={ep}", f"{BASE}/home")
     except Exception as e:
         return jsonify({"error": str(e)}), 502
     return jsonify(data)
