@@ -29,26 +29,37 @@ def api_get(path, referer=None):
 
 
 def slug_for_id(numeric_id):
-    """Resolve numeric anilist id → anidap slug via the public anime API.
+    """Resolve numeric anilist id → anidap slug.
 
-    anidap.lol/api/anime/<anilist_id> returns { data: { id: "<slug>", anilistId, ... } }.
-    The slug (e.g. "naruto-oe7a3") is what chad.anidap.lol's rest/api expects.
-    The old HTML-scrape approach broke when anidap changed its info page markup.
+    anidap.lol/info/<id> embeds the slug in its page JSON as:
+        ...,"requestedId","<id>","id","<slug>","anilistId",<id>,...
+    Parse that directly (no dependency on a separate API host that may block
+    the scraper's egress IP). Fall back to the /api/anime/<id> JSON endpoint.
     """
     try:
-        data, _ = http_get(f"{BASE}/api/anime/{numeric_id}",
-                           {"Referer": f"{BASE}/home"})
+        body, _ = http_get(f"{BASE}/info/{numeric_id}", {"Referer": f"{BASE}/home"})
+        # pattern: "requestedId","<numeric_id>","id","<slug>"
+        m = re.search(
+            r'"requestedId"\s*,\s*"?%s"?\s*,\s*"id"\s*,\s*"([A-Za-z0-9_-]+)"' % re.escape(str(numeric_id)),
+            body,
+        )
+        if m:
+            return m.group(1)
+        # looser fallback: any "id","<slug>" near anilistId:<id>
+        m2 = re.search(
+            r'"anilistId"\s*:\s*%s[^}]{0,200}?"id"\s*:\s*"([A-Za-z0-9_-]+)"' % re.escape(str(numeric_id)),
+            body,
+        )
+        if m2:
+            return m2.group(1)
+    except Exception:
+        pass
+    # fallback: dedicated anime API endpoint
+    try:
+        data, _ = http_get(f"{BASE}/api/anime/{numeric_id}", {"Referer": f"{BASE}/home"})
         j = json.loads(data)
         if j.get("success") and j.get("data", {}).get("id"):
             return j["data"]["id"]
-    except Exception:
-        pass
-    # fallback: legacy scrape (kept in case the API shape changes)
-    try:
-        body, _ = http_get(f"{BASE}/info/{numeric_id}", {"Referer": f"{BASE}/home"})
-        m = re.search(r'/anime/info/([A-Za-z0-9_-]+)', body)
-        if m:
-            return m.group(1)
     except Exception:
         pass
     return None
